@@ -17,6 +17,7 @@ const (
 	CodeCutoffPassed    Code = 10005
 	CodeProductOffShelf Code = 10006
 	CodeOrderCancelled  Code = 10007
+	CodeStockInsufficient Code = 10008
 	CodeInternalError   Code = 50000
 )
 
@@ -29,6 +30,7 @@ var codeMessages = map[Code]string{
 	CodeCutoffPassed:    "已过截团时间，无法下单或修改",
 	CodeProductOffShelf: "商品已下架",
 	CodeOrderCancelled:  "订单已撤销，无法操作",
+	CodeStockInsufficient: "库存不足，已超出可售上限",
 	CodeInternalError:   "服务器内部错误",
 }
 

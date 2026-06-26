@@ -26,6 +26,7 @@ type Product struct {
 	Name      string  `json:"name"`
 	UnitPrice float64 `json:"unit_price"`
 	Unit      string  `json:"unit"`
+	Stock     int     `json:"stock"`
 	OnShelf   bool    `json:"on_shelf"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -68,6 +69,37 @@ func InitDB(dbPath string) error {
 	if err := createTables(); err != nil {
 		return fmt.Errorf("create tables: %w", err)
 	}
+
+	if err := migrate(); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	return nil
+}
+
+func migrate() error {
+	rows, err := DB.Query("PRAGMA table_info(products)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasStock := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, dtype string
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &dtype, &notnull, &dflt, &pk); err != nil {
+			continue
+		}
+		if name == "stock" {
+			hasStock = true
+			break
+		}
+	}
+	if !hasStock {
+		if _, err := DB.Exec("ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -86,6 +118,7 @@ func createTables() error {
 			name TEXT NOT NULL,
 			unit_price REAL NOT NULL,
 			unit TEXT NOT NULL DEFAULT '份',
+			stock INTEGER NOT NULL DEFAULT 0,
 			on_shelf INTEGER NOT NULL DEFAULT 1,
 			created_at DATETIME NOT NULL DEFAULT (datetime('now','localtime')),
 			FOREIGN KEY (group_id) REFERENCES group_sessions(id)

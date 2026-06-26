@@ -135,6 +135,7 @@ type AddProductReq struct {
 	Name      string  `json:"name" binding:"required"`
 	UnitPrice float64 `json:"unit_price" binding:"required,gt=0"`
 	Unit      string  `json:"unit"`
+	Stock     int     `json:"stock"`
 }
 
 func AddProduct(c *gin.Context) {
@@ -151,8 +152,8 @@ func AddProduct(c *gin.Context) {
 	}
 
 	res, err := model.DB.Exec(
-		"INSERT INTO products (group_id, name, unit_price, unit, on_shelf) VALUES (?, ?, ?, ?, 1)",
-		groupID, req.Name, req.UnitPrice, unit,
+		"INSERT INTO products (group_id, name, unit_price, unit, stock, on_shelf) VALUES (?, ?, ?, ?, ?, 1)",
+		groupID, req.Name, req.UnitPrice, unit, req.Stock,
 	)
 	if err != nil {
 		response.Fail(c, response.CodeInternalError)
@@ -160,19 +161,24 @@ func AddProduct(c *gin.Context) {
 	}
 
 	pid, _ := res.LastInsertId()
-	response.OK(c, gin.H{"id": pid, "group_id": groupID, "name": req.Name, "unit_price": req.UnitPrice, "unit": unit, "on_shelf": true})
+	response.OK(c, gin.H{"id": pid, "group_id": groupID, "name": req.Name, "unit_price": req.UnitPrice, "unit": unit, "stock": req.Stock, "on_shelf": true})
 }
 
 func ListProducts(c *gin.Context) {
 	groupID := c.Param("id")
 	shelfOnly := c.Query("on_shelf") == "1"
 
-	query := "SELECT id, group_id, name, unit_price, unit, on_shelf FROM products WHERE group_id = ?"
+	query := `SELECT p.id, p.group_id, p.name, p.unit_price, p.unit, p.stock, p.on_shelf,
+	                 COALESCE(SUM(CASE WHEN o.status != 'cancelled' THEN oi.quantity ELSE 0 END), 0) as sold
+	          FROM products p
+	          LEFT JOIN order_items oi ON p.id = oi.product_id
+	          LEFT JOIN orders o ON oi.order_id = o.id
+	          WHERE p.group_id = ?`
 	args := []interface{}{groupID}
 	if shelfOnly {
-		query += " AND on_shelf = 1"
+		query += " AND p.on_shelf = 1"
 	}
-	query += " ORDER BY id"
+	query += " GROUP BY p.id ORDER BY p.id"
 
 	rows, err := model.DB.Query(query, args...)
 	if err != nil {
@@ -187,13 +193,22 @@ func ListProducts(c *gin.Context) {
 		var gid int64
 		var name, unit string
 		var unitPrice float64
-		var onShelf int
-		if err := rows.Scan(&id, &gid, &name, &unitPrice, &unit, &onShelf); err != nil {
+		var stock, sold, onShelf int
+		if err := rows.Scan(&id, &gid, &name, &unitPrice, &unit, &stock, &onShelf, &sold); err != nil {
 			continue
+		}
+		left := 0
+		if stock > 0 {
+			left = stock - sold
+			if left < 0 {
+				left = 0
+			}
 		}
 		list = append(list, gin.H{
 			"id": id, "group_id": gid, "name": name,
-			"unit_price": unitPrice, "unit": unit, "on_shelf": onShelf == 1,
+			"unit_price": unitPrice, "unit": unit,
+			"stock": stock, "sold": sold, "left": left,
+			"on_shelf": onShelf == 1,
 		})
 	}
 	if list == nil {

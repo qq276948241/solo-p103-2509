@@ -55,10 +55,10 @@ func CreateOrder(c *gin.Context) {
 	for _, it := range req.Items {
 		var pName string
 		var pPrice float64
-		var pOnShelf int
+		var pStock, pOnShelf int
 		err := tx.QueryRow(
-			"SELECT name, unit_price, on_shelf FROM products WHERE id = ? AND group_id = ?", it.ProductID, groupID,
-		).Scan(&pName, &pPrice, &pOnShelf)
+			"SELECT name, unit_price, stock, on_shelf FROM products WHERE id = ? AND group_id = ?", it.ProductID, groupID,
+		).Scan(&pName, &pPrice, &pStock, &pOnShelf)
 		if err == sql.ErrNoRows {
 			response.FailWithMsg(c, response.CodeNotFound, fmt.Sprintf("商品 %d 不存在", it.ProductID))
 			return
@@ -71,6 +71,26 @@ func CreateOrder(c *gin.Context) {
 			response.FailWithMsg(c, response.CodeProductOffShelf, fmt.Sprintf("商品 %s 已下架", pName))
 			return
 		}
+
+		if pStock > 0 {
+			var sold int
+			err = tx.QueryRow(`
+				SELECT COALESCE(SUM(oi.quantity), 0)
+				FROM order_items oi
+				JOIN orders o ON oi.order_id = o.id
+				WHERE oi.product_id = ? AND o.status != 'cancelled'
+			`, it.ProductID).Scan(&sold)
+			if err != nil {
+				response.Fail(c, response.CodeInternalError)
+				return
+			}
+			if sold+it.Quantity > pStock {
+				response.FailWithMsg(c, response.CodeStockInsufficient,
+					fmt.Sprintf("商品 %s 库存不足，已售 %d，上限 %d，还可购 %d", pName, sold, pStock, pStock-sold))
+				return
+			}
+		}
+
 		subtotal := pPrice * float64(it.Quantity)
 		totalAmt += subtotal
 		prodCache[it.ProductID] = gin.H{"name": pName, "price": pPrice}
@@ -253,16 +273,36 @@ func UpdateOrder(c *gin.Context) {
 		for _, it := range req.Items {
 			var pName string
 			var pPrice float64
-			var pOnShelf int
+			var pStock, pOnShelf int
 			err := tx.QueryRow(
-				"SELECT name, unit_price, on_shelf FROM products WHERE id = ? AND group_id = ?", it.ProductID, gid,
-			).Scan(&pName, &pPrice, &pOnShelf)
+				"SELECT name, unit_price, stock, on_shelf FROM products WHERE id = ? AND group_id = ?", it.ProductID, gid,
+			).Scan(&pName, &pPrice, &pStock, &pOnShelf)
 			if err != nil {
 				continue
 			}
 			if pOnShelf == 0 {
 				continue
 			}
+
+			if pStock > 0 {
+				var sold int
+				err = tx.QueryRow(`
+					SELECT COALESCE(SUM(oi.quantity), 0)
+					FROM order_items oi
+					JOIN orders o ON oi.order_id = o.id
+					WHERE oi.product_id = ? AND o.status != 'cancelled' AND o.id != ?
+				`, it.ProductID, orderID).Scan(&sold)
+				if err != nil {
+					response.Fail(c, response.CodeInternalError)
+					return
+				}
+				if sold+it.Quantity > pStock {
+					response.FailWithMsg(c, response.CodeStockInsufficient,
+						fmt.Sprintf("商品 %s 库存不足，已售 %d，上限 %d，还可购 %d", pName, sold, pStock, pStock-sold))
+					return
+				}
+			}
+
 			subtotal := pPrice * float64(it.Quantity)
 			totalAmt += subtotal
 			_, err = tx.Exec(
